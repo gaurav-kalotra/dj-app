@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Env
+.env
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Audio cache
+backend/axiom/cache/
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+
+# DB
+*.sqlite
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
