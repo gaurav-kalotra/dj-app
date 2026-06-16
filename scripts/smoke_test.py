@@ -4,6 +4,11 @@ import os
 import sys
 from pathlib import Path
 
+# Windows terminals default to cp1252; force UTF-8 so Unicode chars print cleanly.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import httpx
 from dotenv import load_dotenv
 
