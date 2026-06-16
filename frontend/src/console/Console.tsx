@@ -7,7 +7,7 @@ import { DeckPanel } from "./DeckPanel"
 const API = "http://localhost:8888"
 
 const SLIDER_H   = 420
-const THUMB_R    = 10
+const THUMB_R    = 8    // Chrome range thumb half-height (16px thumb / 2)
 const GAIN_TICKS = [150, 125, 100, 75, 50, 25, 0]
 
 export function Console() {
@@ -55,7 +55,6 @@ export function Console() {
     const mixer = getMixer()
     await mixer.deck(deckId).load(track)
     mixer.syncTempos()
-    if (deckId === outgoing) mixer.deck(deckId).play()
     forceUpdate(n => n + 1)
   }
 
@@ -89,15 +88,17 @@ export function Console() {
     setError(null)
     setTransitioning(true)
     if (!mixer.deck(outgoing).playing) mixer.deck(outgoing).play()
-    const targetFader = incoming === "B" ? 1 : 0
-    const durationMs  = ((60 / (mixer.deck(outgoing).track!.bpm)) * 32) * 1000
-    await mixer.transition({ outgoing, incoming, startBeat: 0, durationBeats: 32 })
+    const targetFader          = incoming === "B" ? 1 : 0
+    const { delayMs, durationMs } = await mixer.transition({ outgoing, incoming, startBeat: 0, durationBeats: 32 })
     if (!userHoldsFader) {
-      const start = crossfade; const startMs = performance.now()
-      const animate = () => {
+      const start     = crossfade
+      const animStart = performance.now() + delayMs  // fader waits for the delay too
+      const animate   = () => {
         if (userHoldsFader) return
-        const t     = Math.min((performance.now() - startMs) / durationMs, 1)
-        const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+        const elapsed = performance.now() - animStart
+        if (elapsed < 0) { requestAnimationFrame(animate); return }
+        const t     = Math.min(elapsed / durationMs, 1)
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
         setCrossfade(start + (targetFader - start) * eased)
         if (t < 1) requestAnimationFrame(animate)
         else { setCrossfade(targetFader); setOutgoing(incoming) }
@@ -208,35 +209,34 @@ function SideStrip({ side, channelGain, meterGain, onGain }: {
   meterGain: number
   onGain: (pct: number) => void
 }) {
-  // nearest tick to current value — highlights which preset you're closest to
   const nearestTick = GAIN_TICKS.reduce((best, val) =>
     Math.abs(val - channelGain) < Math.abs(best - channelGain) ? val : best
   )
 
+  // Exact label position: same formula the browser uses for thumb placement
+  const labelTop = (val: number) =>
+    THUMB_R + ((150 - val) / 150) * (SLIDER_H - 2 * THUMB_R)
+
+  // Labels sit in a relative container so top= is pixel-perfect with the slider
   const labelsCol = (
-    <div style={{
-      height: SLIDER_H, display: "flex", flexDirection: "column",
-      justifyContent: "space-between", padding: `${THUMB_R}px 0`,
-      width: 38, flexShrink: 0,
-    }}>
+    <div style={{ position: "relative", height: SLIDER_H, width: 34, flexShrink: 0 }}>
       {GAIN_TICKS.map(val => {
         const isExact   = channelGain === val
         const isNearest = val === nearestTick
         return (
-          <button
-            key={val}
-            onClick={() => onGain(val)}
-            style={{
-              all: "unset",
-              fontSize: 10, fontFamily: "monospace", lineHeight: 1,
-              color: isExact ? "#0f0" : isNearest ? "#484" : "#2a2a2a",
-              textAlign: side === "left" ? "right" : "left",
-              whiteSpace: "nowrap",
-              cursor: "pointer",
-              padding: "2px 0",
-              borderBottom: isExact ? "1px solid #0f0" : "1px solid transparent",
-            }}
-          >
+          <button key={val} onClick={() => onGain(val)} style={{
+            all: "unset",
+            position: "absolute",
+            top: labelTop(val),
+            [side === "left" ? "right" : "left"]: 0,
+            transform: "translateY(-50%)",
+            fontSize: 10, fontFamily: "monospace", lineHeight: 1,
+            color: isExact ? "#0f0" : isNearest ? "#484" : "#2a2a2a",
+            textAlign: side === "left" ? "right" : "left",
+            whiteSpace: "nowrap",
+            cursor: "pointer",
+            borderBottom: isExact ? "1px solid #0f0" : "1px solid transparent",
+          }}>
             {val}
           </button>
         )

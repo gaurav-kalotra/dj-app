@@ -21,6 +21,15 @@ export function DeckPanel({ id, deck, library, isOutgoing, onLoad }: Props) {
     const tick = () => {
       setPlaying(deck.playing)
       setPosition(deck.currentTime)
+      // Sync EQ sliders from the live audio graph so they reflect transition automation
+      setEq(prev => {
+        const snap = (v: number) => Math.round(v * 2) / 2  // round to 0.5 dB steps
+        const low  = snap(deck.lowEQ.gain.value)
+        const mid  = snap(deck.midEQ.gain.value)
+        const high = snap(deck.highEQ.gain.value)
+        if (low === prev.low && mid === prev.mid && high === prev.high) return prev
+        return { low, mid, high }
+      })
       raf.current = requestAnimationFrame(tick)
     }
     raf.current = requestAnimationFrame(tick)

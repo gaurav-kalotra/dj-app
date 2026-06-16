@@ -49,8 +49,9 @@ async def library():
             "key":        r["key"],
             "camelot":    r["camelot"],
             "duration_s": r["duration_s"],
-            "beat_grid":  json.loads(r["beat_grid_json"]),
-            "segments":   json.loads(r["segments_json"]),
+            "beat_grid":     json.loads(r["beat_grid_json"]),
+            "energy_curve":  json.loads(r["energy_json"]),
+            "segments":      json.loads(r["segments_json"]),
         })
     return result
 

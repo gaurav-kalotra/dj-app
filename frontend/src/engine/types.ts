@@ -20,6 +20,7 @@ export interface TrackInfo {
   camelot: string
   duration_s: number
   beat_grid: BeatGrid
+  energy_curve: number[]   // normalised RMS, one value per ~0.5s window
   segments: Segment[]
 }
 
