@@ -64,6 +64,43 @@ A running record of what got done and when. Updated as work progresses.
 
 ---
 
+## 2026-06-16
+
+### Phase 3 continued — Bug fixes, UI polish, organic transitions
+
+**Bug fixes:**
+- Crossfader was silently broken: `cancelAndHoldAtCurrentValue` is experimental and was throwing without output, so no `setTargetAtTime` calls after it ever ran. Replaced with `cancelScheduledValues` + explicit value snapshot (`p.value → setValueAtTime(v, now)`)
+- Idle deck stayed silent when fader moved toward it: deck was never started. Fixed in `handleFader` — if fader crosses 10% toward a deck that has a track but isn't playing, `deck.play()` is called automatically
+
+**Gain control redesign:**
+- Gain section removed from inside `DeckPanel` and moved to external side strip alongside the level meter
+- Side strip: clickable tick labels (0, 25, 50, 75, 100, 125, 150%) + vertical slider + level meter
+- Tick labels are sticky presets: clicking jumps to that exact value; nearest tick highlights dim green; active value shows bright green + underline
+- Label positions use `top = THUMB_R + (150 - val) / 150 * (SLIDER_H - 2 * THUMB_R)` with `translateY(-50%)` — matches browser's internal thumb geometry exactly
+- Tracks no longer auto-play on load; PLAY button required
+
+**UI scale-up:**
+- Deck panels widened 260 → 340px, fonts scaled throughout, EQ sliders taller (64 → 90px), all padding/gap values increased
+
+**Organic transition engine (full rewrite of `Mixer.transition()`):**
+- S-curve equal-power crossfade: ease-in-out applied before cos/sin equal-power curve — no energy dip, natural handoff feel
+- True bass swap: outgoing bass dead by 30%, bass gap in the middle, incoming bass delayed until 65%
+- Energy-aware timing: scans outgoing track's `energy_curve` for lowest-energy bar boundary in next 8–16 bars; prefers detected outro segment boundary if within 64 beats
+- Blend duration 24–40 beats scaled by average track energy (high energy → punchy 24, low energy → slow 40)
+- ±1 beat jitter so no two transitions land on the same grid position
+- Incoming track cued at its detected intro segment
+- High EQ blend: outgoing fades −6 dB (S-curve), incoming opens from −6 dB → 0
+- Mid EQ: incoming arrives at −3 dB, restores to 0 by 60% of blend to reduce frequency clash at entry
+- `transition()` returns `TransitionTiming { delayMs, durationMs }` so fader animation waits for the energy-aware delay before moving
+- `energy_curve` added to `/library` API response; `TrackInfo` type updated accordingly
+
+**Realtime EQ sliders:**
+- `DeckPanel` rAF now reads `deck.lowEQ.gain.value`, `deck.midEQ.gain.value`, `deck.highEQ.gain.value` each frame
+- Values snapped to 0.5 dB steps before state update; bails early if unchanged to avoid re-renders
+- Sliders visually move during AUTO MIX showing live transition automation
+
+---
+
 ## 2026-06-11
 
 - Created repo `dj-app` on GitHub
