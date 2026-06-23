@@ -101,6 +101,45 @@ A running record of what got done and when. Updated as work progresses.
 
 ---
 
+## 2026-06-21
+
+### Phase 4 — Orchestrator (autonomy)
+
+**Backend:**
+- Added `backend/axiom/mixplan.py` — deterministic `MixPlan` computation: reads outro segment (or falls back to `duration - 2×blend_window`) for transition timing; 24–40 beat blend duration scaled by average track energy
+- Added `backend/axiom/orchestrator.py` — full autonomous state machine:
+  - States: `idle → suggesting → playing → stopped`
+  - `_begin_session()`: loads both decks via WS, starts the loop
+  - `_run_loop()`: sleeps until transition point, fires `transition_start`, waits for frontend timing ack, flips deck roles, loads N+2 onto freed deck, repeats
+  - `_pipeline_next()`: brain selects N+2 → rules-engine validation → optional Audius download + librosa analysis in thread executor → `_next_track` set
+  - `_await_timing()`: waits up to 3s for frontend `transition_timing` ack; estimates from BPM if not received
+  - Fallback chain: brain failure → rules-engine nearest-Camelot pick → cached random track
+  - `_get_suggestions()`: brain picks 3 Deck B candidates on session start (BPM-compatible fallback if brain fails)
+  - 10s auto-pick timer for Deck B suggestions
+- Updated `backend/axiom/main.py`: lifespan context creates shared `Store`, `BrainClient`, `AudiusAdapter`, `Orchestrator`; `/ws` endpoint routes all commands through orchestrator; `/library` uses shared store
+
+**Frontend:**
+- Added `frontend/src/ws.ts` — singleton `WsClient` with reconnect (3s), per-event listeners, typed `send()` helper
+- Updated `frontend/src/engine/types.ts` — added `WsSessionState`, `WsSuggestions`, `WsTrackQueued`, `WsTransitionStart`, `WsAgentFeed` event shape interfaces
+- Updated `frontend/src/console/Console.tsx` — full AUTO mode alongside existing MANUAL mode:
+  - Mode toggle in header (MANUAL / AUTO)
+  - AUTO idle: seed picker (library dropdown) + START SESSION button
+  - AUTO running: NOW PLAYING bar + narrative + STOP SESSION
+  - `track_queued` event → `mixer.deck(id).load(track)` + optional autoplay
+  - `transition_start` event → `mixer.transition()` → report timing back via `transition_timing` command → animate crossfader with S-curve easing
+  - `suggestions` modal with 10s countdown; user click or backend auto-picks
+  - Scrolling agent feed (last 60 messages, newest on top)
+  - `crossfadeRef` pattern to avoid stale closure in WS callbacks
+  - Manual mode unchanged
+
+**WS event protocol:**
+- Backend → frontend: `session_state`, `suggestions`, `track_queued`, `transition_start`, `agent_feed`, `session_stopped`, `error`
+- Frontend → backend: `seed`, `start`, `stop`, `select_suggestion`, `transition_timing`
+
+**Gate:** seed one track → START SESSION → agent auto-picks Deck B → 30 min unattended with zero dead air; survives injected download failures via ranked-candidate fallback chain
+
+---
+
 ## 2026-06-11
 
 - Created repo `dj-app` on GitHub

@@ -1,17 +1,40 @@
 import json
+import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .brain.client import BrainClient
+from .orchestrator import Orchestrator
+from .sources.audius import AudiusAdapter
 from .store import Store
 
 load_dotenv()
 
-app = FastAPI(title="AXIOM")
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
+
+DATA_DIR = Path(__file__).parent.parent.parent / "data"
+DB_PATH  = DATA_DIR / "axiom.db"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    store  = Store(DB_PATH)
+    brain  = BrainClient()
+    audius = AudiusAdapter()
+    app.state.store       = store
+    app.state.orchestrator = Orchestrator(store, brain, audius, DATA_DIR)
+    yield
+    store.close()
+
+
+app = FastAPI(title="AXIOM", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,13 +43,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
-DB_PATH  = DATA_DIR / "axiom.db"
-
-
-def _store() -> Store:
-    return Store(DB_PATH)
-
 
 @app.get("/health")
 async def health():
@@ -34,24 +50,23 @@ async def health():
 
 
 @app.get("/library")
-async def library():
-    store = _store()
+async def library(request: Request):
+    store: Store = request.app.state.store
     rows = store.all_analyses()
-    store.close()
     result = []
     for r in rows:
         result.append({
-            "source_id":  r["source_id"],
-            "title":      r["title"],
-            "artist":     r["artist"],
-            "genre":      r["genre"],
-            "bpm":        r["bpm"],
-            "key":        r["key"],
-            "camelot":    r["camelot"],
-            "duration_s": r["duration_s"],
-            "beat_grid":     json.loads(r["beat_grid_json"]),
-            "energy_curve":  json.loads(r["energy_json"]),
-            "segments":      json.loads(r["segments_json"]),
+            "source_id":    r["source_id"],
+            "title":        r["title"],
+            "artist":       r["artist"],
+            "genre":        r["genre"],
+            "bpm":          r["bpm"],
+            "key":          r["key"],
+            "camelot":      r["camelot"],
+            "duration_s":   r["duration_s"],
+            "beat_grid":    json.loads(r["beat_grid_json"]),
+            "energy_curve": json.loads(r["energy_json"]),
+            "segments":     json.loads(r["segments_json"]),
         })
     return result
 
@@ -68,6 +83,14 @@ async def audio(source_id: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    await websocket.send_json({"event": "connected", "service": "axiom"})
-    await websocket.close()
+    orch: Orchestrator = websocket.app.state.orchestrator
+    await orch.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            await orch.handle_command(data)
+    except WebSocketDisconnect:
+        await orch.disconnect(websocket)
+    except Exception as e:
+        log.exception("WebSocket error: %s", e)
+        await orch.disconnect(websocket)

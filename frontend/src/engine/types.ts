@@ -36,6 +36,42 @@ export interface DeckState {
 export interface TransitionPlan {
   outgoing: DeckId
   incoming: DeckId
-  startBeat: number     // beat index in outgoing track to start transition
-  durationBeats: number // length of crossfade in beats (default 32)
+  startBeat: number
+  durationBeats: number
+}
+
+// ── WebSocket event shapes ────────────────────────────────────────────────────
+
+export interface WsSessionState {
+  event: "session_state"
+  state: "idle" | "suggesting" | "playing" | "paused" | "stopped"
+  outgoing_deck: DeckId
+  deck_a: TrackInfo | null
+  deck_b: TrackInfo | null
+  narrative: string
+}
+
+export interface WsSuggestions {
+  event: "suggestions"
+  tracks: TrackInfo[]
+  auto_pick_ms: number
+}
+
+export interface WsTrackQueued {
+  event: "track_queued"
+  deck: DeckId
+  track: TrackInfo
+  autoplay: boolean
+}
+
+export interface WsTransitionStart {
+  event: "transition_start"
+  outgoing: DeckId
+  incoming: DeckId
+}
+
+export interface WsAgentFeed {
+  event: "agent_feed"
+  message: string
+  ts: number
 }
