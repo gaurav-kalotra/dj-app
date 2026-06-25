@@ -75,3 +75,26 @@ export interface WsAgentFeed {
   message: string
   ts: number
 }
+
+export interface WsRequestVerdict {
+  event: "request_verdict"
+  request_id: string
+  query: string
+  matched: { title: string; artist: string } | null
+  verdict: "accepted" | "deferred" | "declined"
+  slot_hint: string | null
+  public_reason: string
+  ts: number
+}
+
+export interface TrackRequest {
+  id: string
+  query: string
+  requester: string | null
+  matched_title: string | null
+  matched_artist: string | null
+  verdict: "pending" | "accepted" | "deferred" | "declined"
+  slot_hint: string | null
+  public_reason: string | null
+  submitted_at: string
+}

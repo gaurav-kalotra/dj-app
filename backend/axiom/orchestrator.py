@@ -8,8 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +65,11 @@ class Orchestrator:
 
         self._timing_event: asyncio.Event = asyncio.Event()
         self._timing_data:  dict | None   = None
+
+        self._request_queue: list[dict] = []  # [{req_id, track}]
+
+        # accepted request queue — [{req_id, track, slot_hint}]
+        self._request_queue: list[dict] = []
 
     # ── WebSocket management ──────────────────────────────────────────────────
 
@@ -306,6 +313,23 @@ class Orchestrator:
 
     async def _pipeline_next(self, anchor: dict) -> None:
         """Select and prepare N+2. Sets self._next_track on success."""
+        # Priority: fulfilled requests first
+        if self._request_queue:
+            entry = self._request_queue.pop(0)
+            self._store.mark_request_played(entry["req_id"])
+            self._next_track = entry["track"]
+            await self._feed(f"🎤 Playing request: {entry['track']['artist']} — {entry['track']['title']}")
+            return
+
+        # Re-evaluate deferred requests against current anchor
+        await self._promote_deferred(anchor)
+        if self._request_queue:
+            entry = self._request_queue.pop(0)
+            self._store.mark_request_played(entry["req_id"])
+            self._next_track = entry["track"]
+            await self._feed(f"🎤 Playing deferred request: {entry['track']['artist']} — {entry['track']['title']}")
+            return
+
         await self._feed("🧠 Brain selecting next track…")
         library = self._library_snapshot()
         if not library:
@@ -472,6 +496,169 @@ class Orchestrator:
         library = self._library_snapshot()
         ex_ids = set(self._history) | {exclude.get("source_id", "")}
         return next((t for t in library if t["source_id"] not in ex_ids), None)
+
+    # ── Public queue state (for dashboard) ───────────────────────────────────
+
+    def public_queue(self) -> dict:
+        out_deck = self._deck(self._outgoing)
+        inc_id   = "B" if self._outgoing == "A" else "A"
+        inc_deck = self._deck(inc_id)
+        return {
+            "state":         self._state,
+            "now_playing":   out_deck.track,
+            "cued":          inc_deck.track,
+            "narrative":     self._narrative,
+            "request_queue": [e["track"] for e in self._request_queue],
+        }
+
+    # ── Request handling ──────────────────────────────────────────────────────
+
+    async def submit_request(self, query: str, requester: str | None) -> dict:
+        req_id = f"r_{int(time.time())}_{random.randint(100, 999)}"
+        self._store.submit_request(req_id, query, requester)
+
+        match = self._search_library(query)
+
+        if not match:
+            reason = (
+                "That track isn't in my current library — I only have access to "
+                "the CC-licensed catalog I've analyzed. Try another."
+            )
+            self._store.update_request_verdict(req_id, "declined", None, reason)
+            await self._broadcast_verdict(req_id, query, None, "declined", None, reason)
+            await self._feed(f"❌ Request declined (not found): \"{query}\"")
+            return {"id": req_id, "verdict": "declined", "public_reason": reason}
+
+        if self._state != "playing":
+            reason = f"Added to queue — {match['artist']} — {match['title']} will play when the session starts."
+            self._store.update_request_verdict(
+                req_id, "accepted", "next", reason,
+                match["source_id"], match["title"], match["artist"],
+            )
+            self._request_queue.append({"req_id": req_id, "track": match})
+            await self._broadcast_verdict(req_id, query, match, "accepted", "next", reason)
+            return {"id": req_id, "verdict": "accepted", "slot_hint": "next", "public_reason": reason}
+
+        anchor = self._deck(self._outgoing).track
+        context = self._build_verdict_context(req_id, query, match, anchor)
+
+        try:
+            v = await self._brain.verdict_request(context)
+            verdict, slot_hint, reason = v.verdict, v.slot_hint, v.public_reason
+        except Exception as e:
+            log.warning("Brain verdict failed: %s", e)
+            dist   = camelot_distance(anchor.get("key", ""), match.get("key", "")) if anchor else 99
+            bpm_lo, bpm_hi = reachable_bpm_window(anchor["bpm"]) if anchor else (0, 999)
+            if anchor and bpm_lo <= match["bpm"] <= bpm_hi and dist <= 2:
+                verdict, slot_hint = "accepted", "after_next"
+                reason = f"{match['artist']} — {match['title']} fits the current key and BPM — queuing it up."
+            else:
+                verdict, slot_hint = "deferred", None
+                reason = f"Holding {match['title']} for later — energy and BPM path need to shift first."
+
+        expires_at = None
+        if verdict == "deferred":
+            expires_at = (datetime.utcnow() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+        self._store.update_request_verdict(
+            req_id, verdict, slot_hint, reason,
+            match["source_id"], match["title"], match["artist"],
+            expires_at,
+        )
+        if verdict == "accepted":
+            self._request_queue.append({"req_id": req_id, "track": match})
+            await self._feed(f"✅ Request accepted: {match['artist']} — {match['title']} ({slot_hint})")
+        elif verdict == "deferred":
+            await self._feed(f"⏸ Request deferred: {match['title']}")
+        else:
+            await self._feed(f"❌ Request declined: {match['title']}")
+
+        await self._broadcast_verdict(req_id, query, match, verdict, slot_hint, reason)
+        return {"id": req_id, "verdict": verdict, "slot_hint": slot_hint, "public_reason": reason}
+
+    def _search_library(self, query: str) -> dict | None:
+        q = query.lower()
+        library = self._library_snapshot()
+        matches = [t for t in library if q in t["title"].lower() or q in t["artist"].lower()]
+        if not matches:
+            words = [w for w in q.split() if len(w) >= 3]
+            matches = [
+                t for t in library
+                if any(w in t["title"].lower() or w in t["artist"].lower() for w in words)
+            ]
+        if not matches:
+            return None
+        anchor = self._deck(self._outgoing).track if self._state == "playing" else None
+        if anchor:
+            now_id = anchor.get("source_id")
+            matches = [t for t in matches if t.get("source_id") != now_id]
+            if not matches:
+                return None
+            matches.sort(key=lambda t: camelot_distance(anchor.get("key", ""), t.get("key", "")) or 0)
+        return matches[0]
+
+    def _build_verdict_context(self, req_id: str, query: str, match: dict, anchor: dict | None) -> str:
+        lines = [
+            f'REQUEST ID: {req_id}',
+            f'REQUEST: "{query}"',
+            f"MATCHED TRACK: {match['artist']} — {match['title']} ({match['bpm']} BPM, {match['camelot']})",
+        ]
+        if anchor:
+            dist   = camelot_distance(anchor.get("key", ""), match.get("key", "")) or 0
+            bpm_lo, bpm_hi = reachable_bpm_window(anchor["bpm"])
+            delta  = abs(match["bpm"] - anchor["bpm"]) / anchor["bpm"] * 100
+            lines += [
+                f"CAMELOT DISTANCE TO CURRENT: {dist}",
+                f"BPM DELTA: {delta:.1f}%",
+                "",
+                f"NOW PLAYING: {anchor['artist']} — {anchor['title']} ({anchor['bpm']} BPM, {anchor.get('camelot','?')})",
+                f"CURRENT NARRATIVE: {self._narrative or 'Session just started.'}",
+                f"REACHABLE BPM WINDOW: {bpm_lo:.1f}–{bpm_hi:.1f}",
+            ]
+        else:
+            lines.append("Session not currently active.")
+        return "\n".join(lines)
+
+    async def _broadcast_verdict(
+        self,
+        req_id: str,
+        query: str,
+        match: dict | None,
+        verdict: str,
+        slot_hint: str | None,
+        public_reason: str,
+    ) -> None:
+        await self._broadcast({
+            "event":        "request_verdict",
+            "request_id":   req_id,
+            "query":        query,
+            "matched":      {"title": match["title"], "artist": match["artist"]} if match else None,
+            "verdict":      verdict,
+            "slot_hint":    slot_hint,
+            "public_reason": public_reason,
+            "ts":           time.time(),
+        })
+
+    async def _promote_deferred(self, anchor: dict) -> None:
+        if not anchor:
+            return
+        bpm_lo, bpm_hi = reachable_bpm_window(anchor["bpm"])
+        for row in self._store.get_deferred_requests():
+            if not row["matched_id"]:
+                continue
+            track = self._get_track(row["matched_id"])
+            if not track:
+                continue
+            dist = camelot_distance(anchor.get("key", ""), track.get("key", "")) or 99
+            if bpm_lo <= track["bpm"] <= bpm_hi and dist <= 2:
+                reason = f"The BPM path reached {track['title']} — weaving it in now."
+                self._store.update_request_verdict(
+                    row["id"], "accepted", "next", reason,
+                    track["source_id"], track["title"], track["artist"],
+                )
+                self._request_queue.append({"req_id": row["id"], "track": track})
+                await self._feed(f"⏫ Deferred request promoted: {track['artist']} — {track['title']}")
+                await self._broadcast_verdict(row["id"], row["query"], track, "accepted", "next", reason)
 
     async def _get_suggestions(self, seed: dict) -> list[dict]:
         library = self._library_snapshot()

@@ -140,6 +140,37 @@ A running record of what got done and when. Updated as work progresses.
 
 ---
 
+## 2026-06-24
+
+### Phase 5 — Audience Dashboard + Requests
+
+**Backend:**
+- Added `GET /session` — public session state (now playing, cued, narrative, request queue)
+- Added `POST /requests` — audience request submission; routes through orchestrator for brain adjudication
+- Added `GET /requests` — paginated request history (last 40)
+- Added `requests` table to SQLite store (id, query, requester, verdict, slot_hint, public_reason, matched track, expires_at, played)
+- Added `Orchestrator.submit_request()` — library search → not-found fast-decline → brain `RequestVerdict` call with full context (BPM delta, Camelot distance, reachable window, narrative) → fallback rules-engine path if brain fails
+- Added `Orchestrator._search_library()` — fuzzy title/artist match sorted by Camelot distance to anchor; excludes currently-playing track (bug fix: previously could surface now-playing as a match)
+- Added `Orchestrator._promote_deferred()` — called each loop cycle; promotes deferred requests to accepted when BPM path reaches them (distance ≤ 2, within reachable BPM window)
+- Added `request_verdict` WS broadcast event; dashboard receives live verdicts without polling
+- Owner priority lane: requests accepted while session is idle go straight to queue
+
+**Frontend:**
+- Added `frontend/src/dashboard/Dashboard.tsx` — audience-facing public view: NOW PLAYING block (title, artist, BPM/key/duration), REQUEST A SONG form (query + optional requester name), live request list with verdict badges (ACCEPTED/DEFERRED/DECLINED) + matched track + public reason, scrolling AGENT LOG feed
+- Added `/dashboard` route in `App.tsx` — path-based split, no router dependency
+- Added `WsRequestVerdict`, `TrackRequest` types to `frontend/src/engine/types.ts`
+- Dashboard connects to the same WS endpoint as the console; receives `request_verdict`, `agent_feed`, `track_queued`, `session_state` events live
+
+**Gate passed 2026-06-24:** Live session running. 5 requests submitted:
+- "bohemian rhapsody queen" (unfindable) → declined: "not in my CC-licensed catalog" ✓
+- "jazz ballad miles davis" (unfindable) → declined: same ✓
+- "five years" (compatible) → declined: brain flagged as already in tonight's set ✓
+- "parti d'en bas" (compatible, different artist, Camelot distance 1) → accepted: "sits beautifully close harmonically" ✓
+- "burak" (Camelot distance 2) → deferred: "BPM fits but want the right moment" ✓
+- 2/3 reasonable requests handled with musically coherent verdicts; all declines surfaced sensible public reasons
+
+---
+
 ## 2026-06-11
 
 - Created repo `dj-app` on GitHub

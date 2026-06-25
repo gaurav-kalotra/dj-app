@@ -10,6 +10,22 @@ from .analysis.analyzer import TrackAnalysis
 from .sources.base import TrackMeta
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS requests (
+    id              TEXT PRIMARY KEY,
+    query           TEXT NOT NULL,
+    requester       TEXT,
+    matched_id      TEXT,
+    matched_title   TEXT,
+    matched_artist  TEXT,
+    verdict         TEXT NOT NULL DEFAULT 'pending',
+    slot_hint       TEXT,
+    public_reason   TEXT,
+    played          INTEGER NOT NULL DEFAULT 0,
+    submitted_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    adjudicated_at  TEXT,
+    expires_at      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS tracks (
     source_id   TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -104,6 +120,54 @@ class Store:
         return self._conn.execute(
             "SELECT a.*, t.title, t.artist, t.genre FROM analyses a "
             "JOIN tracks t USING (source_id) ORDER BY a.analyzed_at DESC"
+        ).fetchall()
+
+    # ── requests ─────────────────────────────────────────────────────────────
+
+    def submit_request(self, req_id: str, query: str, requester: str | None) -> None:
+        self._conn.execute(
+            "INSERT INTO requests (id, query, requester) VALUES (?, ?, ?)",
+            (req_id, query, requester),
+        )
+        self._conn.commit()
+
+    def update_request_verdict(
+        self,
+        req_id: str,
+        verdict: str,
+        slot_hint: str | None,
+        public_reason: str,
+        matched_id: str | None = None,
+        matched_title: str | None = None,
+        matched_artist: str | None = None,
+        expires_at: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            """UPDATE requests SET
+               verdict=?, slot_hint=?, public_reason=?,
+               matched_id=?, matched_title=?, matched_artist=?,
+               adjudicated_at=datetime('now'), expires_at=?
+               WHERE id=?""",
+            (verdict, slot_hint, public_reason,
+             matched_id, matched_title, matched_artist,
+             expires_at, req_id),
+        )
+        self._conn.commit()
+
+    def mark_request_played(self, req_id: str) -> None:
+        self._conn.execute("UPDATE requests SET played=1 WHERE id=?", (req_id,))
+        self._conn.commit()
+
+    def get_deferred_requests(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM requests WHERE verdict='deferred' AND played=0 "
+            "AND (expires_at IS NULL OR expires_at > datetime('now')) "
+            "ORDER BY submitted_at ASC"
+        ).fetchall()
+
+    def all_requests(self, limit: int = 40) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM requests ORDER BY submitted_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
     def close(self) -> None:

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from .brain.client import BrainClient
 from .orchestrator import Orchestrator
@@ -38,7 +39,7 @@ app = FastAPI(title="AXIOM", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -79,6 +80,29 @@ async def audio(source_id: str):
         if path.exists():
             return FileResponse(str(path), media_type=f"audio/{ext.lstrip('.')}")
     raise HTTPException(status_code=404, detail=f"Audio not found: {source_id}")
+
+
+class RequestBody(BaseModel):
+    query: str
+    requester: str | None = None
+
+
+@app.get("/session")
+async def session(request: Request):
+    orch: Orchestrator = request.app.state.orchestrator
+    return orch.public_queue()
+
+
+@app.post("/requests")
+async def submit_request(body: RequestBody, request: Request):
+    orch: Orchestrator = request.app.state.orchestrator
+    return await orch.submit_request(body.query.strip(), body.requester)
+
+
+@app.get("/requests")
+async def list_requests(request: Request):
+    store: Store = request.app.state.store
+    return [dict(r) for r in store.all_requests()]
 
 
 @app.websocket("/ws")

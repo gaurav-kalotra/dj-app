@@ -440,20 +440,24 @@ export function Console() {
         )}
       </div>
 
-      {/* ── Agent feed (auto mode only) ── */}
-      {mode === "auto" && feedItems.length > 0 && (
-        <div style={s.feed}>
-          <div style={s.feedTitle}>AGENT LOG</div>
-          <div style={s.feedScroll}>
-            {[...feedItems].reverse().map((item, i) => (
+      {/* ── Agent feed ── */}
+      <div style={s.feed}>
+        <div style={s.feedTitle}>AGENT LOG</div>
+        <div style={s.feedScroll}>
+          {feedItems.length === 0 ? (
+            <div style={{ color: "#2a2a2a", fontSize: 12, fontStyle: "italic" }}>
+              {mode === "auto" ? "waiting for session…" : "switch to AUTO mode to see agent activity"}
+            </div>
+          ) : (
+            [...feedItems].reverse().map((item, i) => (
               <div key={i} style={s.feedItem}>
                 <span style={s.feedTime}>{new Date(item.ts * 1000).toLocaleTimeString()}</span>
                 <span>{item.message}</span>
               </div>
-            ))}
-          </div>
+            ))
+          )}
         </div>
-      )}
+      </div>
 
       <div style={s.footer}>
         {library.length > 0 ? `${library.length} tracks in library` : "connecting to backend…"}
